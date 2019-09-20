@@ -31,15 +31,21 @@ class ConsumerComponent(AIOKafkaConsumer):
         self.key_type = config.pop("key_type", None)
         self.value_type = config.pop("value_type", None)
         self.serializer = config.pop("serializer", json)
+        self.key_deserializer = config.pop(
+            "key_deserializer", None
+        ) or functools.partial(
+            deserializer, _type=self.key_type, _serializer=self.serializer
+        )
+        self.value_deserializer = config.pop(
+            "value_deserializer", None
+        ) or functools.partial(
+            deserializer, _type=self.value_type, _serializer=self.serializer
+        )
         listener = config.pop("listener", ConsumerRebalanceListener())
         config.setdefault("loop", asyncio.get_event_loop())
         config.update(
-            key_deserializer=functools.partial(
-                deserializer, _type=self.key_type, _serializer=self.serializer
-            ),
-            value_deserializer=functools.partial(
-                deserializer, _type=self.value_type, _serializer=self.serializer
-            ),
+            key_deserializer=self.key_deserializer,
+            value_deserializer=self.value_deserializer,
         )
         super().__init__(*topics, **config)
         self.subscribe(topics=topics, listener=listener)
@@ -365,19 +371,6 @@ def serializer(value, *, _type=None, _serializer=json):
     elif isinstance(value, (dict, list)):
         value = _serializer.dumps(value)
     return value.encode("utf-8") if isinstance(value, str) else value
-
-
-@dataclasses.dataclass
-class User:
-    id: int
-    name: str
-
-
-@dataclasses.dataclass
-class Message:
-    id: int
-    recipient: User
-    body: str
 
 
 if __name__ == "__main__":

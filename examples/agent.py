@@ -1,5 +1,5 @@
-from core import kafka_agent
-from core import User, Message
+from kafka_agent.core import kafka_agent
+from models import User, Message
 
 config = dict(key_type=User, value_type=Message, concurrency=1)
 

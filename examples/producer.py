@@ -1,5 +1,5 @@
-from core import ProducerComponent
-from core import User, Message
+from kafka_agent.core import ProducerComponent
+from models import User, Message
 
 
 if __name__ == "__main__":

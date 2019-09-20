@@ -1,7 +1,8 @@
 import asyncio
 import logging
-from core import ConsumerGroupeComponent
-from core import Processor, User, Message
+from kafka_agent.core import ConsumerGroupeComponent
+from kafka_agent.core import Processor
+from models import User, Message
 
 log = logging.getLogger(__name__)
 

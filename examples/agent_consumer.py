@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from agent import consume_stuff, config
-from core import User, Message
+from models import User, Message
 
 log = logging.getLogger(__name__)
 
