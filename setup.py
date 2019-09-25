@@ -8,7 +8,7 @@ except IOError:
     README = None
 
 try:
-    VERSION = open("VERSION").read().strip("\n")
+    VERSION = open("VERSION").read().strip()
 except IOError:
     VERSION = None
 

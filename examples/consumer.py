@@ -30,9 +30,9 @@ async def main():
             value_type=Message,
             config={},
             processors=[
-                Processor(coro=dev_consumer1, concurrency=2),
-                Processor(coro=dev_consumer2, concurrency=2),
-                Processor(coro=dev_consumer3, concurrency=3),
+                Processor(_coro=dev_consumer1, concurrency=1),
+                Processor(_coro=dev_consumer2, concurrency=2),
+                Processor(_coro=dev_consumer3, concurrency=3),
             ],
         )
         await consumer.run()

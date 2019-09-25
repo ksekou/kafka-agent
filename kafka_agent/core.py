@@ -1,39 +1,44 @@
-import json
 import asyncio
-import logging
-from kafka.admin import NewTopic
-from kafka.admin import ConfigResource
-from kafka.admin.config_resource import ConfigResourceType
-from kafka import KafkaAdminClient
-from aiokafka import AIOKafkaConsumer
-from aiokafka import AIOKafkaProducer
-from aiokafka import ConsumerRebalanceListener
 import dataclasses
-import typing
 import functools
+import json
+import logging
+import typing
 import uuid
 
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRebalanceListener
+from kafka import KafkaAdminClient, KafkaClient
+from kafka.admin import NewTopic
 
 log = logging.getLogger(__name__)
 
-DEFAULT_CONFIG = {"bootstrap_servers": "localhost"}
+DEFAULT_CONFIG = {"bootstrap_servers": "localhost:9092"}
 PRODUCER_DEFAULT_CONFIG = {}
 CONSUMER_DEFAULT_CONFIG = {}
 ADMIN_DEFAULT_CONFIG = {}
+DEFAULT_TOPIC_CONFIG = {"partitions": 1, "replicas": 1, "retention_ms": None}
 
 
 class ConsumerComponent(AIOKafkaConsumer):
+    """[summary]
+    
+    Arguments:
+        AIOKafkaConsumer {[type]} -- [description]
+    
+    Raises:
+        AttributeError: [description]
+    
+    Returns:
+        [type] -- [description]
+    """
+
     def __init__(self, *topics, **config):
-        """[summary]
-        
-        Arguments:
-            AIOKafkaConsumer {[type]} -- [description]
-        """
         self._on_before: typing.Set[typing.Coroutine] = set()
         self._on_after: typing.Set[typing.Coroutine] = set()
         self.key_type = config.pop("key_type", None)
         self.value_type = config.pop("value_type", None)
         self.serializer = config.pop("serializer", json)
+        self.skip_invalid = config.pop("skip_invalid", False)
         self.key_deserializer = config.pop(
             "key_deserializer", None
         ) or functools.partial(
@@ -88,6 +93,18 @@ class ConsumerComponent(AIOKafkaConsumer):
 
 
 class ProducerComponent(AIOKafkaProducer):
+    """[summary]
+    
+    Arguments:
+        AIOKafkaProducer {[type]} -- [description]
+    
+    Raises:
+        AttributeError: [description]
+    
+    Returns:
+        [type] -- [description]
+    """
+
     def __init__(self, *args, **config):
         self.key_type = config.pop("key_type", None)
         self.value_type = config.pop("value_type", None)
@@ -124,17 +141,53 @@ class ProducerComponent(AIOKafkaProducer):
 
 @dataclasses.dataclass
 class Processor:
-    coro: typing.Coroutine = dataclasses.field(init=True)
+    _coro: typing.Coroutine = dataclasses.field(init=True)
     concurrency: int = dataclasses.field(default=1)
-    id: str = dataclasses.field(default_factory=lambda: str(uuid.uuid4()))
+    id: str = dataclasses.field(init=False, default_factory=lambda: str(uuid.uuid4()))
+    _on_before: typing.Set[typing.Coroutine] = dataclasses.field(
+        init=False, default_factory=set
+    )
+    _on_after: typing.Set[typing.Coroutine] = dataclasses.field(
+        init=False, default_factory=set
+    )
+
+    @property
+    def on_before(self):
+        return self._on_before
+
+    @on_before.setter
+    def on_before(self, value):
+        if not asyncio.iscoroutinefunction(value):
+            raise Exception("Invalid value type")
+        self._on_before.add(value)
+
+    @property
+    def on_after(self):
+        return self._on_after
+
+    @on_after.setter
+    def on_after(self, value):
+        if not asyncio.iscoroutinefunction(value):
+            raise Exception("Invalid value type")
+        self._on_after.add(value)
+
+    async def coro(self, stream):
+        await self._coro(stream)
+        # breakpoint()
+        # async for msg in stream:
+        #     for before_coro in self.on_before:
+        #         msg = await before_coro(msg)
+        #     msg = await self._coro(msg)
+        #     for after_coro in self.on_before:
+        #         msg = await after_coro(msg)
 
 
 @dataclasses.dataclass
 class Worker:
-    coro: typing.Coroutine = dataclasses.field(init=True)
+    coro: typing.Coroutine
+    task: asyncio.Task = dataclasses.field(default=None)
     processor: Processor = dataclasses.field(init=True, default=None)
     stream: ConsumerComponent = dataclasses.field(init=True, default=None)
-    task: asyncio.Task = dataclasses.field(default=None)
     id: str = dataclasses.field(default_factory=lambda: str(uuid.uuid4()))
 
     async def start(self):
@@ -171,8 +224,6 @@ class ConsumerGroupeComponent:
     )
     processors: typing.List[Processor] = dataclasses.field(default_factory=list)
     workers: typing.List[Worker] = dataclasses.field(default_factory=list)
-    _on_before: typing.Set[typing.Coroutine] = dataclasses.field(default_factory=set)
-    _on_after: typing.Set[typing.Coroutine] = dataclasses.field(default_factory=set)
 
     @property
     def client_id(self):
@@ -214,26 +265,6 @@ class ConsumerGroupeComponent:
                     )
             await asyncio.sleep(5 * 1000)
 
-    @property
-    def on_before(self):
-        return self._on_before
-
-    @on_before.setter
-    def on_before(self, value):
-        if not asyncio.iscoroutinefunction(value):
-            raise Exception("Invalid value type")
-        self._on_before.add(value)
-
-    @property
-    def on_after(self):
-        return self._on_after
-
-    @on_after.setter
-    def on_after(self, value):
-        if not asyncio.iscoroutinefunction(value):
-            raise Exception("Invalid value type")
-        self._on_after.add(value)
-
     async def start(self):
         for processor in self.processors:
             print(f"Starting : {processor.coro.__name__}")
@@ -260,124 +291,6 @@ class ConsumerGroupeComponent:
             self.workers.append(worker)
 
 
-class kafka_agent:
-    def __init__(self, coro: typing.Coroutine):
-        self.coro = coro
-        self.producer_running = False
-        self.producer: ProducerComponent = None
-        self.admin_client: KafkaAdminClient = None
-        self.consumer: ConsumerGroupeComponent = None
-
-    @property
-    def name(self):
-        return f"agent-{self.coro.__name__}"
-
-    def create_topic(self, topic, partitions=1, replicas=3, retention_ms=None):
-        assert self.admin_client is not None, "Agent must be configured."
-        topic_configs = {}
-        if retention_ms is not None:
-            topic_configs["retention.ms"] = retention_ms
-        new_topic = NewTopic(topic, partitions, replicas, topic_configs=topic_configs)
-        return self.admin_client.create_topics([new_topic])
-
-    def get_topic(self, topic):
-        assert self.admin_client is not None, "Agent must be configured."
-        cr = ConfigResource(ConfigResourceType.TOPIC, topic)
-        return self.admin_client.describe_configs([cr])
-
-    def alter_topic(self, topic, configs):
-        assert self.admin_client is not None, "Agent must be configured."
-        cr = ConfigResource(ConfigResourceType.TOPIC, topic, configs=configs)
-        return self.admin_client.alter_configs([cr])
-
-    async def consume(self):
-        assert self.consumer is not None, "Agent must be configured."
-        try:
-            await self.consumer.run()
-        except Exception:
-            log.error("Shuting down consumers", exc_info=True)
-            await self.consumer.stop()
-
-    async def start_producer(self):
-        await self.producer.start()
-        self.producer_running = True
-
-    async def send(self, *topics, **kwargs):
-        assert self.producer is not None, "Agent must be configured."
-        if not self.producer_running:
-            await self.start_producer()
-
-        results = []
-        for topic in self.topics:
-            results.append((topic, await self.producer.send(topic, **kwargs)))
-        return results
-
-    async def send_and_wait(self, *topics, **kwargs):
-        assert self.producer is not None, "Agent must be configured."
-        if not self.producer_running:
-            await self.start_producer()
-
-        results = []
-        for topic in self.topics:
-            results.append((topic, await self.producer.send_and_wait(topic, **kwargs)))
-        return results
-
-    def configure(
-        self,
-        topics=None,
-        key_type=None,
-        value_type=None,
-        broker=None,
-        consumer=None,
-        producer=None,
-        admin=None,
-        concurrency=1,
-    ):
-        self.topics = topics or [f"agent-toipc-{self.name}"]
-        self.key_type = key_type
-        self.value_type = value_type
-        self.concurrency = concurrency
-        DEFAULT_CONFIG["bootstrap_servers"] = broker or "localhost:9092"
-        self.consumer_config = consumer or {}
-        self.producer_config = producer or {}
-        self.admin_config = admin or {}
-        self.consumer = ConsumerGroupeComponent(
-            name=self.name,
-            topics=self.topics,
-            key_type=self.key_type,
-            value_type=self.value_type,
-            processors=[Processor(coro=self.coro, concurrency=self.concurrency)],
-            config={
-                **DEFAULT_CONFIG,
-                **CONSUMER_DEFAULT_CONFIG,
-                **self.consumer_config,
-            },
-        )
-        self.producer = ProducerComponent(
-            key_type=self.key_type,
-            value_type=self.value_type,
-            **{
-                **DEFAULT_CONFIG,
-                **PRODUCER_DEFAULT_CONFIG,
-                **self.consumer_config,
-                "client_id": f"{self.name}:producer:{id(self)}",
-            },
-        )
-
-        self.admin_client = KafkaAdminClient(
-            **{
-                **DEFAULT_CONFIG,
-                **ADMIN_DEFAULT_CONFIG,
-                **self.producer_config,
-                "client_id": f"{self.name}:admin:{id(self)}",
-            }
-        )
-
-
-    async def __call__(self, *args, **kwargs):
-        return await self.coro(*args, **kwargs)
-
-
 def deserializer(value, *, _type=None, _serializer=json):
     assert _serializer is not None, f"Invalid serializer for {value}."
     value = _serializer.loads(value)
@@ -397,4 +310,3 @@ def serializer(value, *, _type=None, _serializer=json):
 
 if __name__ == "__main__":
     pass
-
