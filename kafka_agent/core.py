@@ -1,6 +1,9 @@
 import json
 import asyncio
 import logging
+from kafka.admin import NewTopic
+from kafka.admin import ConfigResource
+from kafka.admin.config_resource import ConfigResourceType
 from kafka import KafkaAdminClient
 from aiokafka import AIOKafkaConsumer
 from aiokafka import AIOKafkaProducer
@@ -269,6 +272,24 @@ class kafka_agent:
     def name(self):
         return f"agent-{self.coro.__name__}"
 
+    def create_topic(self, topic, partitions=1, replicas=3, retention_ms=None):
+        assert self.admin_client is not None, "Agent must be configured."
+        topic_configs = {}
+        if retention_ms is not None:
+            topic_configs["retention.ms"] = retention_ms
+        new_topic = NewTopic(topic, partitions, replicas, topic_configs=topic_configs)
+        return self.admin_client.create_topics([new_topic])
+
+    def get_topic(self, topic):
+        assert self.admin_client is not None, "Agent must be configured."
+        cr = ConfigResource(ConfigResourceType.TOPIC, topic)
+        return self.admin_client.describe_configs([cr])
+
+    def alter_topic(self, topic, configs):
+        assert self.admin_client is not None, "Agent must be configured."
+        cr = ConfigResource(ConfigResourceType.TOPIC, topic, configs=configs)
+        return self.admin_client.alter_configs([cr])
+
     async def consume(self):
         assert self.consumer is not None, "Agent must be configured."
         try:
@@ -351,6 +372,7 @@ class kafka_agent:
                 "client_id": f"{self.name}:admin:{id(self)}",
             }
         )
+
 
     async def __call__(self, *args, **kwargs):
         return await self.coro(*args, **kwargs)
